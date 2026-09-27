@@ -11,6 +11,9 @@ const VISUELS = [
   { id: 'promo', label: 'Promo Fête' },
 ];
 
+// Template choisi par l'IA (backend) -> visuel de l'écran
+const TEMPLATE_VERS_VISUEL = { wax: 'statut', sobre: 'classique', promo: 'promo' };
+
 const ONGLETS = [
   { id: 'whatsapp', label: 'WhatsApp' },
   { id: 'facebook', label: 'Facebook' },
@@ -24,14 +27,15 @@ function separerPrix(prix) {
 }
 
 function identifiant(nom, prix) {
-  const base = String(nom ?? "pub")
+  const base = String(nom ?? 'pub')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 40);
-  return `${base}-${prix ?? ""}-${Date.now().toString(36)}`;
+  const prixPropre = String(prix ?? '').replace(/\D/g, '');
+  return `${base}-${prixPropre}-${Date.now().toString(36)}`;
 }
 
 export default function ResultatPage() {
@@ -48,23 +52,30 @@ export default function ResultatPage() {
       try {
         const parsed = JSON.parse(brut);
         setDonnees(parsed);
+        if (TEMPLATE_VERS_VISUEL[parsed.template]) {
+          setVisuel(TEMPLATE_VERS_VISUEL[parsed.template]);
+        }
         const id = identifiant(parsed.produit?.nom, parsed.produit?.prix);
-        sessionStorage.setItem(
-          `jaaykat:pub:${id}`,
-          JSON.stringify({
-            id,
-            nom: parsed.produit?.nom ?? 'Produit',
-            prix: parsed.produit?.prix ?? '',
-            description: parsed.description ?? '',
-            legendes: parsed.legendes ?? {},
-            hashtags: parsed.hashtags ?? [],
-            vendeur: {
-              nom: parsed.produit?.vendeur || 'Aminata Diop',
-              whatsapp: (parsed.produit?.whatsapp || '221771234567').replace(/[^\d]/g, ''),
-              localisation: parsed.produit?.localisation || 'Dakar, Sandaga',
-            },
-          })
-        );
+        const miniPage = {
+          id,
+          nom: parsed.produit?.nom ?? 'Produit',
+          prix: parsed.produit?.prix ?? '',
+          description: parsed.description ?? '',
+          legendes: parsed.legendes ?? {},
+          hashtags: parsed.hashtags ?? [],
+          photo: parsed.produit?.photo ?? null,
+          vendeur: {
+            nom: parsed.produit?.vendeur || 'Aminata Diop',
+            whatsapp: (parsed.produit?.whatsapp || '221771234567').replace(/[^\d]/g, ''),
+            localisation: parsed.produit?.localisation || 'Dakar, Sandaga',
+          },
+        };
+        try {
+          sessionStorage.setItem(`jaaykat:pub:${id}`, JSON.stringify(miniPage));
+        } catch {
+          miniPage.photo = null;
+          sessionStorage.setItem(`jaaykat:pub:${id}`, JSON.stringify(miniPage));
+        }
         setMiniId(id);
       } catch {
         setDonnees(null);
@@ -130,6 +141,15 @@ export default function ResultatPage() {
     window.open(`https://wa.me/?text=${message}`, '_blank', 'noopener,noreferrer');
   }
 
+  function telechargerPhoto() {
+    const photo = donnees?.produit?.photo;
+    if (!photo) return;
+    const a = document.createElement('a');
+    a.href = photo;
+    a.download = `${(donnees.produit?.nom || 'produit').replace(/\s+/g, '-')}.jpg`;
+    a.click();
+  }
+
   if (charge) {
     return (
       <main className="flex min-h-[70vh] items-center justify-center">
@@ -153,6 +173,7 @@ export default function ResultatPage() {
   }
 
   const prix = separerPrix(donnees.produit?.prix);
+  const photo = donnees.produit?.photo;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 sm:py-12">
@@ -220,6 +241,21 @@ export default function ResultatPage() {
               visuel === 'classique' ? '' : 'rounded-xl bg-white/10 p-4 text-white backdrop-blur-sm',
             ].join(' ')}
           >
+            {photo ? (
+              <div className="relative mb-4 overflow-hidden rounded-xl bg-white">
+                <img
+                  src={photo}
+                  alt={donnees.produit?.nom || 'Photo du produit'}
+                  className="mx-auto max-h-96 w-full object-contain"
+                />
+                {prix ? (
+                  <span className="absolute bottom-3 left-3 rounded-lg bg-prix px-3 py-1.5 font-titre text-base font-extrabold text-white shadow-lg sm:text-lg">
+                    {prix} FCFA
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
             <p
               className={[
                 'whitespace-pre-line text-sm leading-relaxed',
@@ -250,10 +286,7 @@ export default function ResultatPage() {
       </section>
 
       <section aria-label="Canal de publication" className="mt-6">
-        <div
-          role="tablist"
-          className="grid grid-cols-2 gap-2 sm:grid-cols-4"
-        >
+        <div role="tablist" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {ONGLETS.map((o) => (
             <button
               key={o.id}
@@ -281,6 +314,11 @@ export default function ResultatPage() {
         <button type="button" onClick={copierTexte} className="btn-secondaire flex-1">
           📋 Copier la légende
         </button>
+        {photo ? (
+          <button type="button" onClick={telechargerPhoto} className="btn-secondaire flex-1">
+            ⬇️ Télécharger la photo
+          </button>
+        ) : null}
         <Link href={miniId ? `/p/${miniId}` : '/'} className="btn-secondaire flex-1">
           🌐 Mini-page
         </Link>

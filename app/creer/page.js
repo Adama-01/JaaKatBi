@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import genererPubMock from '@/lib/mock';
+import { genererPub, reduireImage, transcrireAudio } from '@/lib/api';
 
 const OCCASIONS = [
   { valeur: '', label: 'Aucune' },
@@ -16,6 +16,19 @@ const OCCASIONS = [
   { valeur: 'magal', label: 'Magal Touba' },
   { valeur: 'promo', label: 'Promotion' },
 ];
+
+// Valeurs attendues par le backend (/api/generer)
+const OCCASION_BACKEND = {
+  '': 'aucune',
+  'fin-du-mois': 'fin_du_mois',
+  'black-friday': 'black_friday',
+  'fetes-fin-annee': 'fin_annee',
+  'korite-tabaski': 'tabaski',
+  korite: 'korite',
+  tabaski: 'tabaski',
+  magal: 'aucune',
+  promo: 'aucune',
+};
 
 const ETAPES = [
   'Analyse du produit',
@@ -45,14 +58,15 @@ function FormulaireCreation() {
     description: '',
     occasion: occasionValide,
   });
+  // photo = { nom, taille, url } — url est une data URL (base64) qui survit au changement de page
   const [photo, setPhoto] = useState(null);
   const [ecoute, setEcoute] = useState(false);
+  const [transcription, setTranscription] = useState(false);
   const [chargement, setChargement] = useState(false);
   const [erreur, setErreur] = useState('');
 
   const fichierRef = useRef(null);
-  const reconnaissanceRef = useRef(null);
-  const baseDescription = useRef('');
+  const enregistreurRef = useRef(null);
 
   useEffect(() => {
     setChamps((c) => (c.occasion === occasionValide ? c : { ...c, occasion: occasionValide }));
@@ -60,103 +74,128 @@ function FormulaireCreation() {
 
   useEffect(() => {
     return () => {
-      if (photo) URL.revokeObjectURL(photo.url);
-      reconnaissanceRef.current?.abort?.();
+      if (enregistreurRef.current?.state === 'recording') enregistreurRef.current.stop();
     };
-  }, [photo]);
+  }, []);
 
   function maj(champ, valeur) {
     setChamps((c) => ({ ...c, [champ]: valeur }));
     if (erreur) setErreur('');
   }
 
-  function choisirPhoto(e) {
+  async function choisirPhoto(e) {
     const fichier = e.target.files?.[0];
     if (!fichier) return;
-    setPhoto((ancien) => {
-      if (ancien) URL.revokeObjectURL(ancien.url);
-      return { nom: fichier.name, taille: fichier.size, url: URL.createObjectURL(fichier) };
-    });
+    try {
+      // Réduit la photo (800 px, JPEG) : assez légère pour sessionStorage et Supabase
+      const dataUrl = await reduireImage(fichier, 800, 'image/jpeg');
+      setPhoto({ nom: fichier.name, taille: Math.round((dataUrl.length * 3) / 4), url: dataUrl });
+    } catch {
+      setErreur('Impossible de lire cette photo. Essayez une autre image.');
+    }
   }
 
-  function dicter() {
+  // Dictée vocale en wolof : le micro enregistre, puis l'audio part vers
+  // /api/transcrire (serveur GPU NVIDIA Brev + modèle Whisper wolof)
+  async function dicter() {
+    if (transcription) return;
     if (ecoute) {
-      reconnaissanceRef.current?.stop?.();
+      enregistreurRef.current?.stop();
       return;
     }
-
-    const Reconnaissance =
-      typeof window !== 'undefined'
-        ? window.SpeechRecognition || window.webkitSpeechRecognition
-        : null;
-
-    if (!Reconnaissance) {
-      setErreur('La dictée vocale n\'est pas disponible sur ce navigateur.');
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setErreur('Le micro n\'est pas disponible sur ce navigateur.');
       return;
     }
-
-    const reco = new Reconnaissance();
-    reco.lang = 'fr-FR';
-    reco.interimResults = false;
-    reco.continuous = false;
-    baseDescription.current = champs.description;
-    reconnaissanceRef.current = reco;
-
-    reco.onresult = (event) => {
-      const dit = event.results[0][0].transcript;
-      const precedent = baseDescription.current.trim();
-      maj('description', precedent ? `${precedent} ${dit}` : dit);
-    };
-    reco.onerror = () => {
-      setErreur('Dictée interrompue. Réessayez ou écrivez votre description.');
-      setEcoute(false);
-    };
-    reco.onend = () => setEcoute(false);
-
-    reco.start();
-    setEcoute(true);
+    try {
+      const flux = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(flux);
+      const morceaux = [];
+      rec.ondataavailable = (e) => {
+        if (e.data.size) morceaux.push(e.data);
+      };
+      rec.onstop = async () => {
+        flux.getTracks().forEach((t) => t.stop());
+        setEcoute(false);
+        setTranscription(true);
+        try {
+          const audio = new Blob(morceaux, { type: rec.mimeType || 'audio/webm' });
+          const { texte } = await transcrireAudio(audio);
+          const dit = String(texte || '').trim();
+          if (dit) {
+            setChamps((c) => {
+              const avant = c.description.trim();
+              return { ...c, description: avant ? `${avant} ${dit}` : dit };
+            });
+          }
+        } catch (err) {
+          setErreur(err?.message || 'Transcription impossible. Écrivez la description.');
+        } finally {
+          setTranscription(false);
+        }
+      };
+      enregistreurRef.current = rec;
+      rec.start();
+      setEcoute(true);
+      setErreur('');
+      // Arrêt automatique après 30 secondes
+      setTimeout(() => {
+        if (rec.state === 'recording') rec.stop();
+      }, 30000);
+    } catch {
+      setErreur('Micro refusé. Autorisez le micro ou écrivez la description.');
+    }
   }
 
   async function soumettre(e) {
     e?.preventDefault?.();
     if (chargement) return;
 
+    const nom = champs.nomProduit.trim();
+    const prixNombre = Number(champs.prix.replace(/\D/g, ''));
+    if (!nom) {
+      setErreur('Indiquez le nom du produit.');
+      return;
+    }
+    if (!prixNombre) {
+      setErreur('Indiquez un prix en FCFA.');
+      return;
+    }
+
     setChargement(true);
     setErreur('');
 
     try {
-      // Remplacer par : const r = await fetch('/api/generer', { method: 'POST', ... })
-      const resultat = await genererPubMock({
-        nomProduit: champs.nomProduit.trim(),
-        prixActuel: champs.prix.trim(),
-        description: champs.description.trim() || undefined,
-        categorie: OCCASIONS.find((o) => o.valeur === champs.occasion)?.label,
+      const resultat = await genererPub({
+        nom,
+        prix: prixNombre,
+        whatsapp: champs.whatsapp.trim(),
+        description: champs.description.trim(),
+        occasion: OCCASION_BACKEND[champs.occasion] ?? 'aucune',
       });
 
-      if (resultat?.erreur) {
-        setErreur(resultat.erreur);
-        setChargement(false);
-        return;
-      }
+      const aSauver = {
+        ...resultat,
+        produit: {
+          nom,
+          prix: prixNombre.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g, ' '),
+          description: champs.description.trim(),
+          occasion: OCCASIONS.find((o) => o.valeur === champs.occasion)?.label ?? '',
+          whatsapp: champs.whatsapp.trim(),
+          photo: photo?.url ?? null,
+        },
+      };
 
-      sessionStorage.setItem(
-        'jaaykat:resultat',
-        JSON.stringify({
-          ...resultat,
-          produit: {
-            nom: champs.nomProduit.trim(),
-            prix: champs.prix.trim(),
-            description: champs.description.trim(),
-            occasion:
-              OCCASIONS.find((o) => o.valeur === champs.occasion)?.label ?? '',
-            whatsapp: champs.whatsapp.trim(),
-            photo: photo?.url ?? null,
-          },
-        })
-      );
+      try {
+        sessionStorage.setItem('jaaykat:resultat', JSON.stringify(aSauver));
+      } catch {
+        // Si la photo est trop lourde pour le stockage, on garde au moins les textes
+        aSauver.produit.photo = null;
+        sessionStorage.setItem('jaaykat:resultat', JSON.stringify(aSauver));
+      }
       router.push('/resultat');
     } catch (err) {
-      setErreur(err?.message || 'Une erreur est survenue. Reessayez.');
+      setErreur(err?.message || 'Une erreur est survenue. Réessayez.');
       setChargement(false);
     }
   }
@@ -172,7 +211,7 @@ function FormulaireCreation() {
           Génération en cours…
         </h1>
         <p className="mt-2 text-sm text-fonce/60">
-          Préparation de vos visuels et légendes. Comptez 6 secondes.
+          Préparation de vos visuels et légendes. Comptez quelques secondes.
         </p>
         <ol className="mt-8 w-full space-y-2 text-left text-sm">
           {ETAPES.map((etape, i) => (
@@ -334,9 +373,11 @@ function FormulaireCreation() {
                 type="button"
                 onClick={dicter}
                 aria-pressed={ecoute}
+                disabled={transcription}
                 className={[
                   'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold text-white transition-opacity',
                   ecoute ? 'animate-pulse bg-prix' : 'bg-sahel hover:opacity-90',
+                  transcription ? 'cursor-wait opacity-70' : '',
                 ].join(' ')}
               >
                 <svg
@@ -348,7 +389,11 @@ function FormulaireCreation() {
                   <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
                   <path d="M18 11a1 1 0 1 1 2 0 8 8 0 0 1-7 7.93V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.07A8 8 0 0 1 4 11a1 1 0 1 1 2 0 6 6 0 0 0 12 0Z" />
                 </svg>
-                {ecoute ? 'J\'écoute…' : 'Dictée vocale'}
+                {ecoute
+                  ? 'Stop — transcrire'
+                  : transcription
+                    ? 'Transcription…'
+                    : 'Dicter en wolof'}
               </button>
             </div>
             <textarea
