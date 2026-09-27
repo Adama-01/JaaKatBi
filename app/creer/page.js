@@ -36,25 +36,39 @@ const ETAPES = [
   'Génération des hashtags',
 ];
 
-// Repli sur la reconnaissance vocale du navigateur quand le GPU ne répond pas.
-// L'audio n'est jamais envoyé : seul le texte transcrit est conservé.
-function dicterLocalement(morceaux, typeAudio, appliquer) {
+// Repli sur la reconnaissance vocale du navigateur quand le GPU ne repond pas.
+// ATTENTION : l'API Web Speech n'a pas de locale wolof. On tente donc le
+// senegalais puis le francais, et le resultat est approximatif : c'est la
+// transcription GPU qui sait vraiment ecrire le wolof.
+const LOCALES_REPLI = ['fr-SN', 'fr-FR'];
+
+function dicterLocalement(morceaux, typeAudio, appliquer, signaler) {
   const Reconnaissance =
     typeof window !== 'undefined'
       ? window.SpeechRecognition || window.webkitSpeechRecognition
       : null;
-  if (!Reconnaissance || !morceaux.length) return false;
+  if (!Reconnaissance) {
+    signaler("Dictée vocale indisponible : le micro n'est pas accessible ici.");
+    return false;
+  }
+  if (!morceaux.length) return false;
 
   try {
-    const fichier = new File(morceaux, 'vocal.webm', { type: typeAudio || 'audio/webm' });
     const reco = new Reconnaissance();
-    reco.lang = 'fr-FR';
+    reco.lang = LOCALES_REPLI[0];
     reco.interimResults = false;
     reco.continuous = false;
     reco.onresult = (event) => {
       const dit = String(event.results[0][0].transcript).trim();
       if (!dit) return;
       appliquer((avant) => (avant ? `${avant} ${dit}` : dit));
+    };
+    reco.onerror = (event) => {
+      const raison =
+        event?.error === 'not-allowed'
+          ? "Micro refusé. Autorisez-le ou écrivez la description."
+          : "Dictée navigateur interrompue. Écrivez la description.";
+      signaler(raison);
     };
     reco.start();
     return true;
@@ -90,6 +104,7 @@ function FormulaireCreation() {
   const [transcription, setTranscription] = useState(false);
   const [chargement, setChargement] = useState(false);
   const [erreur, setErreur] = useState('');
+  const [infos, setInfos] = useState('');
 
   const fichierRef = useRef(null);
   const enregistreurRef = useRef(null);
@@ -107,6 +122,7 @@ function FormulaireCreation() {
   function maj(champ, valeur) {
     setChamps((c) => ({ ...c, [champ]: valeur }));
     if (erreur) setErreur('');
+    if (infos) setInfos('');
   }
 
   async function choisirPhoto(e) {
@@ -157,15 +173,27 @@ function FormulaireCreation() {
           }
         } catch (err) {
           // Le GPU peut être indisponible (non configuré ou éteint). On tente
-          // alors la dictée du navigateur pour ne pas bloquer la saisie.
+          // alors la dictée du navigateur, mais en prévenant que le wolof ne
+          // sera pas bien reconnu : l'API Web Speech n'a pas de locale wolof.
           const panneServeur = err?.statut === undefined || Number(err?.statut) >= 500;
-          const repli = panneServeur
-            ? dicterLocalement(morceaux, rec.mimeType, (construire) =>
-                setChamps((c) => ({ ...c, description: construire(c.description.trim()) }))
-              )
-            : false;
-          if (!repli) {
+          if (!panneServeur) {
             setErreur(err?.message || 'Transcription impossible. Écrivez la description.');
+            return;
+          }
+          setInfos(
+            "Serveur de transcription wolof indisponible : dictée approximative en français. Pour transcrire le wolof, configurez TRANSCRIPTION_URL."
+          );
+          const repli = dicterLocalement(
+            morceaux,
+            rec.mimeType,
+            (construire) =>
+              setChamps((c) => ({ ...c, description: construire(c.description.trim()) })),
+            setErreur
+          );
+          if (!repli) {
+            setErreur(
+              err?.message || "Dictée indisponible. Écrivez la description à la main."
+            );
           }
         } finally {
           setTranscription(false);
@@ -493,6 +521,15 @@ function FormulaireCreation() {
             })}
           </div>
         </fieldset>
+
+        {infos ? (
+          <p
+            role="status"
+            className="rounded-xl border border-sahel/30 bg-sahel/10 px-4 py-3 text-sm text-sahel"
+          >
+            {infos}
+          </p>
+        ) : null}
 
         {erreur ? (
           <div
