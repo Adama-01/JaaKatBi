@@ -3,18 +3,17 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import genererPubMock from '@/lib/mock';
 import { genererPub, reduireImage, transcrireAudio } from '@/lib/api';
 
+// Les valeurs doivent correspondre à OCCASIONS de lib/prompts.js (côté API).
 const OCCASIONS = [
-  { valeur: '', label: 'Aucune' },
-  { valeur: 'fin-du-mois', label: 'Fin du mois' },
-  { valeur: 'black-friday', label: 'Black Friday' },
-  { valeur: 'fetes-fin-annee', label: 'Fêtes fin d\'année' },
-  { valeur: 'korite-tabaski', label: 'Korité & Tabaski' },
+  { valeur: 'aucune', label: 'Aucune' },
+  { valeur: 'fin_du_mois', label: 'Fin du mois' },
+  { valeur: 'black_friday', label: 'Black Friday' },
+  { valeur: 'fin_annee', label: "Fêtes fin d'année" },
   { valeur: 'korite', label: 'Korité' },
   { valeur: 'tabaski', label: 'Tabaski' },
-  { valeur: 'magal', label: 'Magal Touba' },
-  { valeur: 'promo', label: 'Promotion' },
 ];
 
 // Valeurs attendues par le backend (/api/generer)
@@ -36,6 +35,33 @@ const ETAPES = [
   'Rédaction des légendes',
   'Génération des hashtags',
 ];
+
+// Repli sur la reconnaissance vocale du navigateur quand le GPU ne répond pas.
+// L'audio n'est jamais envoyé : seul le texte transcrit est conservé.
+function dicterLocalement(morceaux, typeAudio, appliquer) {
+  const Reconnaissance =
+    typeof window !== 'undefined'
+      ? window.SpeechRecognition || window.webkitSpeechRecognition
+      : null;
+  if (!Reconnaissance || !morceaux.length) return false;
+
+  try {
+    const fichier = new File(morceaux, 'vocal.webm', { type: typeAudio || 'audio/webm' });
+    const reco = new Reconnaissance();
+    reco.lang = 'fr-FR';
+    reco.interimResults = false;
+    reco.continuous = false;
+    reco.onresult = (event) => {
+      const dit = String(event.results[0][0].transcript).trim();
+      if (!dit) return;
+      appliquer((avant) => (avant ? `${avant} ${dit}` : dit));
+    };
+    reco.start();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export default function CreerPage() {
   return (
@@ -87,7 +113,8 @@ function FormulaireCreation() {
     const fichier = e.target.files?.[0];
     if (!fichier) return;
     try {
-      // Réduit la photo (800 px, JPEG) : assez légère pour sessionStorage et Supabase
+      // Data URL : survit à la navigation, contrairement à un object URL.
+      // Réduite à 800 px, assez légère pour sessionStorage et Supabase.
       const dataUrl = await reduireImage(fichier, 800, 'image/jpeg');
       setPhoto({ nom: fichier.name, taille: Math.round((dataUrl.length * 3) / 4), url: dataUrl });
     } catch {
@@ -129,7 +156,17 @@ function FormulaireCreation() {
             });
           }
         } catch (err) {
-          setErreur(err?.message || 'Transcription impossible. Écrivez la description.');
+          // Le GPU peut être indisponible (non configuré ou éteint). On tente
+          // alors la dictée du navigateur pour ne pas bloquer la saisie.
+          const panneServeur = err?.statut === undefined || Number(err?.statut) >= 500;
+          const repli = panneServeur
+            ? dicterLocalement(morceaux, rec.mimeType, (construire) =>
+                setChamps((c) => ({ ...c, description: construire(c.description.trim()) }))
+              )
+            : false;
+          if (!repli) {
+            setErreur(err?.message || 'Transcription impossible. Écrivez la description.');
+          }
         } finally {
           setTranscription(false);
         }
@@ -165,20 +202,45 @@ function FormulaireCreation() {
     setChargement(true);
     setErreur('');
 
+    let resultat;
     try {
-      const resultat = await genererPub({
+      resultat = await genererPub({
         nom,
         prix: prixNombre,
         whatsapp: champs.whatsapp.trim(),
         description: champs.description.trim(),
         occasion: OCCASION_BACKEND[champs.occasion] ?? 'aucune',
       });
+    } catch (err) {
+      // Panne IA (clé absente, GPU indisponible, réseau) : on dégrade sur le
+      // mock plutôt que d'afficher une erreur. Un 4xx, lui, est une vraie
+      // erreur de saisie et doit être remonté.
+      const panne = err?.statut === undefined || Number(err?.statut) >= 500;
+      if (!panne) {
+        setErreur(err?.message || 'Une erreur est survenue. Réessayez.');
+        setChargement(false);
+        return;
+      }
+      resultat = await genererPubMock({
+        nomProduit: nom,
+        prixActuel: String(prixNombre),
+        description: champs.description.trim() || undefined,
+        categorie: OCCASIONS.find((o) => o.valeur === champs.occasion)?.label,
+      });
+    }
 
+    if (resultat?.erreur) {
+      setErreur(resultat.erreur);
+      setChargement(false);
+      return;
+    }
+
+    try {
       const aSauver = {
         ...resultat,
         produit: {
           nom,
-          prix: prixNombre.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g, ' '),
+          prix: prixNombre.toLocaleString('fr-FR').replace(/[\u202f\u00a0]/g, ' '),
           description: champs.description.trim(),
           occasion: OCCASIONS.find((o) => o.valeur === champs.occasion)?.label ?? '',
           whatsapp: champs.whatsapp.trim(),
@@ -194,8 +256,8 @@ function FormulaireCreation() {
         sessionStorage.setItem('jaaykat:resultat', JSON.stringify(aSauver));
       }
       router.push('/resultat');
-    } catch (err) {
-      setErreur(err?.message || 'Une erreur est survenue. Réessayez.');
+    } catch {
+      setErreur('Une erreur est survenue. Réessayez.');
       setChargement(false);
     }
   }
@@ -265,7 +327,7 @@ function FormulaireCreation() {
               <>
                 <span
                   className="mx-auto block h-40 w-full rounded-xl bg-cover bg-center sm:h-56"
-                  style={{ backgroundImage: `url(${photo.url})` }}
+                  style={{ backgroundImage: `url(${photo.dataUrl})` }}
                   aria-hidden="true"
                 />
                 <span className="mt-4 block truncate text-sm font-semibold text-terre">
@@ -299,7 +361,6 @@ function FormulaireCreation() {
             )}
           </label>
           <input
-            ref={fichierRef}
             id="photo"
             name="photo"
             type="file"

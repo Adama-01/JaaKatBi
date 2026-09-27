@@ -2,7 +2,7 @@ import Link from 'next/link';
 
 const FETES = [
   {
-    cle: 'fin-du-mois',
+    cle: 'fin_du_mois',
     nom: 'Fin du mois',
     accroche: 'Les salaires tombent',
     texte:
@@ -10,7 +10,7 @@ const FETES = [
     couleurs: ['#D95C20', '#F2B807'],
   },
   {
-    cle: 'black-friday',
+    cle: 'black_friday',
     nom: 'Black Friday',
     accroche: 'Tout doit partir',
     texte:
@@ -18,7 +18,7 @@ const FETES = [
     couleurs: ['#1E3A8A', '#2D2D2D'],
   },
   {
-    cle: 'fetes-fin-annee',
+    cle: 'fin_annee',
     nom: 'Fêtes fin d\'année',
     accroche: 'Cadeaux et festions',
     texte:
@@ -26,7 +26,7 @@ const FETES = [
     couleurs: ['#C0392B', '#D4A574'],
   },
   {
-    cle: 'korite-tabaski',
+    cle: 'tabaski',
     nom: 'Korité & Tabaski',
     accroche: 'Le pic de l\'année',
     texte:

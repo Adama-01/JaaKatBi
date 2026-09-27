@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { composerPub } from '@/lib/visuel';
 
 const CLE = 'jaaykat:resultat';
 
@@ -13,7 +14,6 @@ const VISUELS = [
 
 // Template choisi par l'IA (backend) -> visuel de l'écran
 const TEMPLATE_VERS_VISUEL = { wax: 'statut', sobre: 'classique', promo: 'promo' };
-
 const ONGLETS = [
   { id: 'whatsapp', label: 'WhatsApp' },
   { id: 'facebook', label: 'Facebook' },
@@ -45,6 +45,33 @@ export default function ResultatPage() {
   const [onglet, setOnglet] = useState('whatsapp');
   const [copie, setCopie] = useState('');
   const [miniId, setMiniId] = useState('');
+  const [image, setImage] = useState('');
+  const [format, setFormat] = useState('feed');
+
+  // Le visuel est recomposé à chaque changement de modèle ou de format.
+  useEffect(() => {
+    let annule = false;
+    if (!donnees) return undefined;
+
+    composerPub({
+      photo: donnees.produit?.photo ?? null,
+      nom: donnees.produit?.nom ?? '',
+      prix: donnees.produit?.prix ?? '',
+      badge: donnees.legendes?.statut ?? '',
+      visuel,
+      format,
+    })
+      .then((dataUrl) => {
+        if (!annule) setImage(dataUrl);
+      })
+      .catch(() => {
+        if (!annule) setImage('');
+      });
+
+    return () => {
+      annule = true;
+    };
+  }, [donnees, visuel, format]);
 
   useEffect(() => {
     const brut = sessionStorage.getItem(CLE);
@@ -225,63 +252,63 @@ export default function ResultatPage() {
           ) : null}
         </div>
 
-        <div
-          className={[
-            'mt-5 flex overflow-hidden rounded-2xl',
-            visuel === 'classique'
-              ? 'border border-fonce/10'
-              : visuel === 'statut'
-                ? 'bg-gradient-to-br from-terre via-sahel to-baobab p-6'
-                : 'bg-gradient-to-br from-prix via-terre to-sahel p-6',
-          ].join(' ')}
-        >
-          <div
-            className={[
-              'w-full',
-              visuel === 'classique' ? '' : 'rounded-xl bg-white/10 p-4 text-white backdrop-blur-sm',
-            ].join(' ')}
-          >
-            {photo ? (
-              <div className="relative mb-4 overflow-hidden rounded-xl bg-white">
-                <img
-                  src={photo}
-                  alt={donnees.produit?.nom || 'Photo du produit'}
-                  className="mx-auto max-h-96 w-full object-contain"
-                />
-                {prix ? (
-                  <span className="absolute bottom-3 left-3 rounded-lg bg-prix px-3 py-1.5 font-titre text-base font-extrabold text-white shadow-lg sm:text-lg">
-                    {prix} FCFA
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
+<div className="mt-5 flex justify-center">
+          {image ? (
+            <figure className="w-full max-w-sm overflow-hidden rounded-2xl border border-fonce/10 bg-white">
+              <span
+                className="block w-full"
+                style={{ backgroundImage: `url(${image})`, backgroundSize: 'contain', backgroundRepeat: 'no-repeat', aspectRatio: format === 'story' ? '9 / 16' : '4 / 5' }}
+                role="img"
+                aria-label={`Aperçu du visuel ${visuel}`}
+              />
+              <figcaption className="flex items-center justify-between gap-3 border-t border-fonce/10 px-4 py-3">
+                <span className="text-xs text-fonce/50">Aperçu généré</span>
+                <span className="flex gap-1">
+                  {[
+                    { id: 'feed', label: 'Feed' },
+                    { id: 'story', label: 'Story' },
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setFormat(f.id)}
+                      aria-pressed={format === f.id}
+                      className={[
+                        'rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors',
+                        format === f.id
+                          ? 'bg-terre text-white'
+                          : 'bg-fonce/5 text-fonce/60 hover:bg-terre/10 hover:text-terre',
+                      ].join(' ')}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </span>
+              </figcaption>
+            </figure>
+          ) : (
+            <div className="flex aspect-4/5 w-full max-w-sm items-center justify-center rounded-2xl border border-fonce/10 bg-fonce/5 text-sm text-fonce/50">
+              Génération du visuel…
+            </div>
+          )}
+        </div>
 
-            <p
-              className={[
-                'whitespace-pre-line text-sm leading-relaxed',
-                visuel === 'classique' ? 'text-fonce/80' : 'text-white/95',
-              ].join(' ')}
-            >
-              {contenu.corps}
-            </p>
-            {contenu.hashtags.length ? (
-              <div className="mt-4 flex flex-wrap gap-1.5">
-                {contenu.hashtags.map((h) => (
-                  <span
-                    key={h}
-                    className={[
-                      'rounded-lg px-2 py-0.5 text-xs font-semibold',
-                      visuel === 'classique'
-                        ? 'bg-sahel/15 text-baobab'
-                        : 'bg-white/25 text-white',
-                    ].join(' ')}
-                  >
-                    {h}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
+        <div className="mt-5 rounded-2xl bg-fonce/[0.03] p-4">
+          <p className="whitespace-pre-line text-sm leading-relaxed text-fonce/80">
+            {contenu.corps}
+          </p>
+          {contenu.hashtags.length ? (
+            <div className="mt-4 flex flex-wrap gap-1.5">
+              {contenu.hashtags.map((h) => (
+                <span
+                  key={h}
+                  className="rounded-lg bg-sahel/15 px-2 py-0.5 text-xs font-semibold text-baobab"
+                >
+                  {h}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
 
